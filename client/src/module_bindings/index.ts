@@ -38,14 +38,22 @@ import AiWriteRecommendationReducer from "./ai_write_recommendation_reducer";
 export { AiWriteRecommendationReducer };
 import ApproveUnlockReducer from "./approve_unlock_reducer";
 export { ApproveUnlockReducer };
+import ConfirmUnlockStatusReducer from "./confirm_unlock_status_reducer";
+export { ConfirmUnlockStatusReducer };
+import ConnectSmartcarVehicleReducer from "./connect_smartcar_vehicle_reducer";
+export { ConnectSmartcarVehicleReducer };
 import GenerateCloseoutReducer from "./generate_closeout_reducer";
 export { GenerateCloseoutReducer };
 import IdentityConnectedReducer from "./identity_connected_reducer";
 export { IdentityConnectedReducer };
 import IdentityDisconnectedReducer from "./identity_disconnected_reducer";
 export { IdentityDisconnectedReducer };
+import IngestSmartcarSnapshotReducer from "./ingest_smartcar_snapshot_reducer";
+export { IngestSmartcarSnapshotReducer };
 import PushTelemetryReducer from "./push_telemetry_reducer";
 export { PushTelemetryReducer };
+import RecordUnlockCommandReducer from "./record_unlock_command_reducer";
+export { RecordUnlockCommandReducer };
 import ReserveVehicleReducer from "./reserve_vehicle_reducer";
 export { ReserveVehicleReducer };
 import SeedDemoDataReducer from "./seed_demo_data_reducer";
@@ -68,6 +76,8 @@ import TripEventsRow from "./trip_events_table";
 export { TripEventsRow };
 import TripsRow from "./trips_table";
 export { TripsRow };
+import VehicleSnapshotsRow from "./vehicle_snapshots_table";
+export { VehicleSnapshotsRow };
 import VehiclesRow from "./vehicles_table";
 export { VehiclesRow };
 
@@ -86,6 +96,8 @@ import TripEvent from "./trip_event_type";
 export { TripEvent };
 import Vehicle from "./vehicle_type";
 export { Vehicle };
+import VehicleSnapshot from "./vehicle_snapshot_type";
+export { VehicleSnapshot };
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema(
@@ -156,6 +168,17 @@ const tablesSchema = __schema(
     ],
   }, TripsRow),
   __table({
+    name: 'vehicle_snapshots',
+    indexes: [
+      { name: 'id', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'vehicle_snapshots_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, VehicleSnapshotsRow),
+  __table({
     name: 'vehicles',
     indexes: [
       { name: 'id', algorithm: 'btree', columns: [
@@ -172,8 +195,12 @@ const tablesSchema = __schema(
 const reducersSchema = __reducers(
   __reducerSchema("ai_write_recommendation", AiWriteRecommendationReducer),
   __reducerSchema("approve_unlock", ApproveUnlockReducer),
+  __reducerSchema("confirm_unlock_status", ConfirmUnlockStatusReducer),
+  __reducerSchema("connect_smartcar_vehicle", ConnectSmartcarVehicleReducer),
   __reducerSchema("generate_closeout", GenerateCloseoutReducer),
+  __reducerSchema("ingest_smartcar_snapshot", IngestSmartcarSnapshotReducer),
   __reducerSchema("push_telemetry", PushTelemetryReducer),
+  __reducerSchema("record_unlock_command", RecordUnlockCommandReducer),
   __reducerSchema("reserve_vehicle", ReserveVehicleReducer),
   __reducerSchema("seed_demo_data", SeedDemoDataReducer),
   __reducerSchema("start_return", StartReturnReducer),

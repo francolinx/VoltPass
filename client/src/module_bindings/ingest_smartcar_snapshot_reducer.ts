@@ -10,19 +10,16 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default __t.object("Vehicle", {
-  id: __t.u64(),
-  model: __t.string(),
-  battery: __t.i32(),
-  location: __t.string(),
-  status: __t.string(),
+export default {
+  vehicleId: __t.u64(),
+  tripId: __t.u64(),
   source: __t.string(),
+  batteryPct: __t.i32(),
+  odometer: __t.f64(),
   latitude: __t.f64(),
   longitude: __t.f64(),
   locationConfirmed: __t.bool(),
   lockStatus: __t.string(),
   chargeStatus: __t.string(),
   smartcarVehicleId: __t.string(),
-});
-
-
+};

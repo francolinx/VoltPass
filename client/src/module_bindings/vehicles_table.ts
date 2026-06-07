@@ -16,4 +16,11 @@ export default __t.row({
   battery: __t.i32(),
   location: __t.string(),
   status: __t.string(),
+  source: __t.string(),
+  latitude: __t.f64(),
+  longitude: __t.f64(),
+  locationConfirmed: __t.bool().name("location_confirmed"),
+  lockStatus: __t.string().name("lock_status"),
+  chargeStatus: __t.string().name("charge_status"),
+  smartcarVehicleId: __t.string().name("smartcar_vehicle_id"),
 });

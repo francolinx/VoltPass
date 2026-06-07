@@ -12,15 +12,16 @@ import {
 
 export default __t.row({
   id: __t.u64().primaryKey(),
+  vehicleId: __t.u64().name("vehicle_id"),
   tripId: __t.u64().name("trip_id"),
-  battery: __t.i32(),
-  odometerDelta: __t.f32().name("odometer_delta"),
-  harshBrake: __t.bool().name("harsh_brake"),
-  geofenceOk: __t.bool().name("geofence_ok"),
-  timestamp: __t.timestamp(),
   source: __t.string(),
+  batteryPct: __t.i32().name("battery_pct"),
+  odometer: __t.f64(),
   latitude: __t.f64(),
   longitude: __t.f64(),
   locationConfirmed: __t.bool().name("location_confirmed"),
   lockStatus: __t.string().name("lock_status"),
+  chargeStatus: __t.string().name("charge_status"),
+  smartcarVehicleId: __t.string().name("smartcar_vehicle_id"),
+  capturedAt: __t.timestamp().name("captured_at"),
 });

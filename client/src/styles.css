@@ -614,6 +614,138 @@ body {
   }
 }
 
+/* ---- Smartcar Live Mode ---- */
+.smartcar-card {
+  border-color: #1f6feb55;
+  background: linear-gradient(120deg, #131f33, #16142c);
+}
+.sc-mode {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+.sc-mode.live {
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+.sc-mode.test {
+  color: var(--accent);
+}
+.sc-mode.simulator {
+  color: var(--warn);
+}
+.sc-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.sc-connect {
+  text-align: center;
+  padding: 8px 0;
+}
+.sc-vehicles {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.sc-vehicle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+}
+.sc-vehicle.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.sc-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.sc-snapshot {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  position: relative;
+}
+.sc-stat {
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.sc-stat .stat-val.small {
+  font-size: 14px;
+}
+.sc-source {
+  position: absolute;
+  right: 0;
+  top: -22px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---- Resident live badges ---- */
+.live-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.vh-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 8px;
+}
+.badge-confirmed {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.badge-unlocked {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.badge-warn {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warn);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
 @media (max-width: 820px) {
   .grid {
     grid-template-columns: 1fr;

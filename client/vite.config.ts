@@ -8,5 +8,12 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // The Smartcar connector (secrets live there) runs separately; proxy /api to it.
+    proxy: {
+      "/api": {
+        target: process.env.VOLTPASS_API_URL ?? "http://localhost:3001",
+        changeOrigin: true,
+      },
+    },
   },
 });

@@ -75,11 +75,12 @@ a state machine, and a real-time fan-out from scratch.
 
 | Table | Meaning |
 |---|---|
-| `vehicles` | id, model, battery, location, status |
+| `vehicles` | id, model, battery, location, status + live fields: source, latitude, longitude, location_confirmed, lock_status, charge_status, smartcar_vehicle_id |
 | `residents` | id, name, voltscore, status |
 | `trips` | id, vehicle_id, renter, state, created_at — *the Trip Room* |
 | `trip_events` | id, trip_id, kind, payload, timestamp — *the live timeline* |
-| `telemetry` | id, trip_id, battery, odometer_delta, harsh_brake, geofence_ok, timestamp |
+| `telemetry` | id, trip_id, battery, odometer_delta, harsh_brake, geofence_ok, timestamp, source, latitude, longitude, location_confirmed, lock_status |
+| `vehicle_snapshots` | id, vehicle_id, trip_id, source, battery_pct, odometer, latitude, longitude, location_confirmed, lock_status, charge_status, smartcar_vehicle_id, captured_at — *rich Smartcar/sim snapshots* |
 | `ai_recommendations` | id, trip_id, kind, verdict, body, created_at — *AI Trust Agent output* |
 | `community` | id, name, teslas, residents, chargers — *Community Ops stats* |
 
@@ -102,10 +103,20 @@ persist data — they never make outbound HTTP/LLM calls):
 - `generate_closeout(trip_id, verdict, body)` *(AI Trust Agent)* — **persist-only.**
   Stores the closeout the agent computed, then performs the deterministic
   AI_REVIEWING → CLOSED transition and frees the vehicle. Idempotent.
+- `connect_smartcar_vehicle(smartcar_vehicle_id, model, label)` *(Smartcar connector)* —
+  **persist-only.** Upserts a real Smartcar-connected vehicle into the fleet.
+- `ingest_smartcar_snapshot(vehicle_id, trip_id, source, battery_pct, odometer, latitude, longitude, location_confirmed, lock_status, charge_status, smartcar_vehicle_id)`
+  *(Smartcar connector)* — **persist-only.** Updates the vehicle's live state, writes a
+  `vehicle_snapshots` audit row, and (during an active trip) a telemetry row.
+- `record_unlock_command(trip_id, vehicle_id, command_status)` *(Smartcar connector)* —
+  **persist-only.** Records that an unlock command was sent.
+- `confirm_unlock_status(trip_id, vehicle_id, lock_status)` *(Smartcar connector)* —
+  **persist-only.** Records the lock status read back after the command.
 
 Each reducer is annotated with the **actor** that calls it. The resident, the
-owner, the telemetry simulator, and the AI Trust Agent are four distinct actors,
-all writing to the one authoritative shared state.
+owner, the telemetry simulator, the **Smartcar connector**, and the AI Trust
+Agent are five distinct actors, all writing to the one authoritative shared
+state. **No reducer ever calls Smartcar, an LLM, or any network service.**
 
 **Subscriptions** (both clients subscribe to all of these):
 
@@ -118,6 +129,59 @@ SELECT * FROM telemetry
 SELECT * FROM ai_recommendations
 SELECT * FROM community
 ```
+
+## Real vehicle integration (Smartcar)
+
+VoltPass connects **real Teslas through Smartcar** for live state-of-charge, GPS,
+parked-location confirmation, lock/security status, and remote unlock — while
+keeping SpacetimeDB as the authoritative trip ledger and never compromising the
+demo.
+
+**Architecture (secrets stay server-side):**
+
+```
+Smartcar Connect OAuth
+  → server-side connector (api/, holds the Client Secret + tokens)
+  → Smartcar API (battery / location / odometer / security / unlock)
+  → SpacetimeDB persist-only reducers
+  → live Trip Room updates in /resident and /owner
+```
+
+- The **Client Secret and access/refresh tokens live only in `api/`** (server-side
+  env). The browser never sees them — it only calls the connector's routes.
+- **No reducer calls Smartcar.** The connector calls Smartcar, then persists the
+  results via the persist-only reducers above.
+- If Smartcar isn't configured, or OAuth / a command fails, the connector
+  **falls back to a local simulator** and the two-window SpacetimeDB demo keeps
+  working. Real Smartcar is the preferred path when credentials are present.
+
+**Scopes requested:** `read_vehicle_info`, `read_battery`, `read_charge`,
+`read_location`, `read_odometer`, `read_security`, `control_security`.
+
+**Tesla note:** during Smartcar/Tesla authorization the owner must grant the
+matching Tesla permissions — *Vehicle Information* (battery/odometer/security
+reads), *Vehicle Location* (GPS), and *Vehicle Commands* (lock/unlock via
+`control_security`).
+
+**Environment variables** (`api/.env`, see [`api/.env.example`](api/.env.example)):
+
+```
+SMARTCAR_CLIENT_ID=
+SMARTCAR_CLIENT_SECRET=
+SMARTCAR_REDIRECT_URI=http://localhost:5173/callback
+SMARTCAR_TEST_MODE=false
+```
+
+**Connector routes** (`api/src/index.ts`):
+
+| Route | Purpose |
+|---|---|
+| `GET /api/smartcar/auth-url` | Build the Smartcar Connect URL (with scopes) |
+| `GET /api/smartcar/callback?code=…` | Exchange code → tokens, list vehicles, register them in SpacetimeDB |
+| `GET /api/smartcar/vehicles` | List connected vehicles (make/model/year/id) |
+| `POST /api/smartcar/snapshot` | Fetch live battery/GPS/odometer/lock, confirm geofence, `ingest_smartcar_snapshot` |
+| `POST /api/smartcar/unlock` | Send Smartcar unlock, `record_unlock_command` → advance trip → `confirm_unlock_status` |
+| `POST /api/smartcar/connect-simulator` | Connect simulated Teslas (fallback, no OAuth) |
 
 ## How the AI Trust Agent works
 
@@ -152,13 +216,17 @@ The shared decision logic lives in
 > The reducers are idempotent per (trip, kind), so the standalone agent and the
 > fallback can never produce a duplicate.
 
-## What is simulated
+## What is real vs simulated
 
-- **Vehicle telemetry** is produced by a **simulator-backed vehicle connector
-  that mirrors Smartcar/Tesla telemetry events** for reliable demo execution. No
-  real Smartcar/Tesla API is called. The owner's *Simulate Trip* button streams
-  telemetry rows through SpacetimeDB one at a time:
-  battery `82 → 61`, odometer `+14.2 mi`, one `harsh_brake`, `geofence_ok`.
+- **Real:** when Smartcar credentials are configured, live battery/SOC, GPS,
+  odometer, parked-location confirmation, lock status, and the **remote unlock
+  command** come from real Teslas via Smartcar (see the section above).
+- **Simulated (fallback):** the in-trip telemetry stream (the owner's
+  *Simulate Trip* button — battery `82 → 61`, odometer `+14.2 mi`, one
+  `harsh_brake`, `geofence_ok`) is a **simulator-backed vehicle connector that
+  mirrors Smartcar/Tesla telemetry events** for reliable demo execution. The
+  Smartcar connector also falls back to simulated vehicles if no credentials are
+  present or a call fails — so the SpacetimeDB demo never breaks.
 
 ## How to run locally
 
@@ -185,6 +253,12 @@ npm run dev
 cd agent
 npm install
 npm start          # optional: ANTHROPIC_API_KEY=sk-... npm start  (LLM closeout)
+
+# 5. in a fifth terminal: run the Smartcar connector (a separate actor)
+cd api
+npm install
+cp .env.example .env   # fill in SMARTCAR_CLIENT_ID / SMARTCAR_CLIENT_SECRET
+npm start              # with no creds it runs in simulator mode
 ```
 
 Then open the two windows side by side:
@@ -192,9 +266,11 @@ Then open the two windows side by side:
 - http://localhost:5173/resident
 - http://localhost:5173/owner
 
-> The AI Trust Agent in step 4 is the honest architecture. If you skip it, the
-> owner window's built-in fallback still writes the AI artifacts, so the demo
-> loop always completes.
+> Steps 4 and 5 are the honest architecture (AI Trust Agent + Smartcar connector
+> as separate actors). If you skip the agent, the owner window's built-in
+> fallback still writes the AI artifacts. If you skip Smartcar creds, the
+> connector runs in simulator mode. Either way the two-window SpacetimeDB loop
+> always completes.
 
 > The client connects to `ws://<host>:3000` by default. Override with
 > `?stdb=ws://host:port` on either page if your DB is elsewhere.
@@ -222,11 +298,32 @@ Then open the two windows side by side:
 The whole point: **a judge sees shared live state across two windows within 10
 seconds**, and every change went through SpacetimeDB.
 
+## Demo script — real Tesla unlock via Smartcar
+
+With the connector running (and Smartcar creds for real cars):
+
+1. **(`/owner`)** In **Smartcar Live Mode**, click **Connect Smartcar** →
+   authorize Tesla through Smartcar → you return to `/owner` with your real
+   Teslas (Model X, Model S, Model S) listed.
+2. **Select a Tesla** and click **Pull Live Snapshot** → the panel shows real
+   **SOC %**, **GPS**, **Parked where expected: confirmed**, and **lock status**
+   — all written into SpacetimeDB, so `/resident` updates live too.
+3. **(`/resident`)** The connected Tesla now shows with its **live SOC** and a
+   **"Vehicle location confirmed"** badge. Click **Reserve**.
+4. The **AI Trust Agent** writes its unlock recommendation **using the live
+   Smartcar snapshot** ("…snapshot captured at 78% battery in Community Garage…").
+5. **(`/owner`)** Click **Unlock via Smartcar** → a real unlock command is sent
+   to the Tesla; SpacetimeDB records *unlock requested → command sent →
+   unlocked*, the trip goes *Trip active*, and both windows update live.
+6. Continue with **Simulate Trip** / **Start Return** as above, or finish the
+   trip. If Smartcar is unavailable at any point, **Use simulator fallback** and
+   the loop still completes.
+
 ## Future roadmap
 
-- Real Smartcar/Tesla connector behind the same telemetry row contract
+- Reverse-geocoded parked locations and richer geofence policies
 - LLM-authored closeout prose (same structured `ai_recommendations` schema)
-- VoltScore as a learned model over historical trip telemetry
+- VoltScore as a learned model over historical trip + Smartcar telemetry
 - Dispute & damage flows as additional Trip Room states
 - The **underwriting dataset**: priced risk for community EV sharing
 

@@ -5,7 +5,7 @@ import {
   start,
   type Snapshot,
 } from "./store";
-import type { Trip } from "./types";
+import type { Trip, Vehicle } from "./types";
 
 export function useVoltPass(): Snapshot {
   useEffect(() => {
@@ -18,6 +18,28 @@ export function useVoltPass(): Snapshot {
 export function activeTrip(snap: Snapshot): Trip | null {
   if (snap.trips.length === 0) return null;
   return snap.trips[snap.trips.length - 1];
+}
+
+/** The vehicle the demo currently revolves around.
+ *  - during a trip: the trip's vehicle
+ *  - otherwise: a live Smartcar-connected Tesla that has a snapshot, if any
+ *  - else: the seeded Tesla Model 3 (pure-simulator demo) */
+export function featureVehicle(snap: Snapshot): Vehicle | null {
+  const trip = activeTrip(snap);
+  if (trip) {
+    return snap.vehicles.find((v) => v.id === trip.vehicleId) ?? null;
+  }
+  const smartSnapped = snap.vehicles.find(
+    (v) => v.source === "smartcar_live" && v.status === "Available" && v.battery > 0,
+  );
+  if (smartSnapped) return smartSnapped;
+  const anySmart = snap.vehicles.find(
+    (v) => v.source === "smartcar_live" && v.status === "Available",
+  );
+  if (anySmart) return anySmart;
+  return (
+    snap.vehicles.find((v) => v.model === "Tesla Model 3") ?? snap.vehicles[0] ?? null
+  );
 }
 
 /** Returns true for ~1.1s after the given flash key last changed, so callers

@@ -159,8 +159,23 @@ export function start() {
   if (started) return;
   started = true;
 
-  const token = localStorage.getItem("voltpass_token") ?? undefined;
+  let token: string | undefined;
+  try {
+    token = localStorage.getItem("voltpass_token") ?? undefined;
+  } catch {
+    token = undefined;
+  }
 
+  try {
+    buildConnection(token);
+  } catch (err) {
+    // Never let a connection failure blank the page — the UI shows "Connecting…".
+    console.error("VoltPass: failed to start SpacetimeDB connection", err);
+    rebuild({ connected: false });
+  }
+}
+
+function buildConnection(token: string | undefined) {
   DbConnection.builder()
     .withUri(wsUri())
     .withModuleName(MODULE_NAME)

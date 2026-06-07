@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { useVoltPass, activeTrip } from "../hooks";
 import { approveUnlock, pushTelemetry, seedDemoData } from "../store";
 import { useOwnerAgentFallback } from "../ai/useOwnerAgentFallback";
+import { SmartcarPanel } from "../SmartcarPanel";
+import { smartcar } from "../smartcar-api";
 import {
   ConnectionPill,
   StatePill,
@@ -41,6 +43,30 @@ export default function OwnerPage() {
 
   const canApprove = !!trip && trip.state === "VEHICLE_VERIFIED";
   const canSimulate = !!trip && trip.state === "TRIP_ACTIVE" && !simulating;
+
+  // If the trip's vehicle is Smartcar-connected, the unlock goes through a real
+  // Smartcar command; otherwise it's the simulator approve path.
+  const tripVehicle = trip ? snap.vehicles.find((v) => v.id === trip.vehicleId) : undefined;
+  const isSmartcarVehicle = tripVehicle?.source === "smartcar_live";
+
+  async function doApprove() {
+    if (!trip) return;
+    if (isSmartcarVehicle && tripVehicle?.smartcarVehicleId) {
+      try {
+        await smartcar.unlock(
+          tripVehicle.smartcarVehicleId,
+          tripVehicle.id.toString(),
+          trip.id.toString(),
+          true,
+        );
+      } catch (e) {
+        console.error("Smartcar unlock failed, falling back to approve:", e);
+        approveUnlock(trip.id); // fallback so the demo never stalls
+      }
+    } else {
+      approveUnlock(trip.id);
+    }
+  }
 
   const activeTripCount = snap.trips.filter(
     (t) => t.state !== "CLOSED",
@@ -108,8 +134,8 @@ export default function OwnerPage() {
               </div>
               <div className="res-actions">
                 {canApprove && (
-                  <button className="btn primary big" onClick={() => approveUnlock(trip.id)}>
-                    🔓 Approve Unlock
+                  <button className="btn primary big" onClick={doApprove}>
+                    {isSmartcarVehicle ? "🔓 Unlock via Smartcar" : "🔓 Approve Unlock"}
                   </button>
                 )}
                 {trip.state === "TRIP_ACTIVE" && (
@@ -128,6 +154,9 @@ export default function OwnerPage() {
             </Flash>
           )}
         </section>
+
+        {/* Smartcar Live Mode */}
+        <SmartcarPanel snap={snap} trip={trip} />
 
         {/* Community Ops */}
         <section className="card community">

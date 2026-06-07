@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useVoltPass, activeTrip } from "../hooks";
+import { useVoltPass, activeTrip, featureVehicle } from "../hooks";
 import { reserveVehicle, startReturn, seedDemoData } from "../store";
 import {
   ConnectionPill,
@@ -17,10 +17,11 @@ export default function ResidentPage() {
   const snap = useVoltPass();
   const trip = activeTrip(snap);
 
-  const model3 = snap.vehicles.find((v) => v.model === "Tesla Model 3");
+  const vehicle = featureVehicle(snap);
   const canReserve =
-    !!model3 && model3.status === "Available" && (!trip || trip.state === "CLOSED");
+    !!vehicle && vehicle.status === "Available" && (!trip || trip.state === "CLOSED");
   const canReturn = !!trip && trip.state === "TRIP_ACTIVE";
+  const isLive = vehicle?.source === "smartcar_live";
 
   const tripEvents = trip ? snap.events.filter((e) => e.tripId === trip.id) : [];
   const tripRecs = trip ? snap.recs.filter((r) => r.tripId === trip.id) : [];
@@ -48,21 +49,38 @@ export default function ResidentPage() {
             <h2>Your Community Fleet</h2>
             <span className="sub">Microsoft Apartments · resident-only</span>
           </div>
-          {model3 && (
-            <Flash snap={snap} flashKey={`vehicle-${model3.id}`} className="vehicle-hero">
+          {vehicle && (
+            <Flash snap={snap} flashKey={`vehicle-${vehicle.id}`} className="vehicle-hero">
               <div className="vh-art">🚙⚡</div>
               <div className="vh-info">
-                <div className="vh-model">{model3.model}</div>
-                <div className="vh-meta">
-                  🔋 {model3.battery}% · 📍 {model3.location}
+                <div className="vh-model">
+                  {vehicle.model}
+                  {isLive && <span className="live-badge">● Smartcar live</span>}
                 </div>
-                <VehicleStatus status={model3.status} />
+                <div className="vh-meta">
+                  🔋 {vehicle.battery}% {isLive ? "(live SOC)" : ""} · 📍 {vehicle.location}
+                </div>
+                <div className="vh-badges">
+                  <VehicleStatus status={vehicle.status} />
+                  {isLive && vehicle.locationConfirmed && (
+                    <span className="badge-confirmed">✓ Vehicle location confirmed</span>
+                  )}
+                  {isLive && !vehicle.locationConfirmed && (
+                    <span className="badge-warn">⚠ Location not confirmed</span>
+                  )}
+                  {isLive && vehicle.lockStatus === "unlocked" && (
+                    <span className="badge-unlocked">🔓 Unlock sent · vehicle unlocked</span>
+                  )}
+                  {isLive && vehicle.lockStatus === "unlocking" && (
+                    <span className="badge-warn">🔓 Unlock requested…</span>
+                  )}
+                </div>
               </div>
               <div className="vh-action">
                 <button
                   className="btn primary big"
                   disabled={!canReserve || !snap.connected}
-                  onClick={() => model3 && reserveVehicle(model3.id, RENTER)}
+                  onClick={() => vehicle && reserveVehicle(vehicle.id, RENTER)}
                 >
                   Reserve
                 </button>

@@ -35,7 +35,7 @@ export function connectSpacetime() {
     .onConnectError((_ctx, err) => console.error("[stdb] connect error:", err.message))
     .onDisconnect(() => console.log("[stdb] disconnected"))
     .build();
-  return ready;
+  return Promise.race([ready,new Promise<void>((_,r)=>setTimeout(()=>r(new Error('STDB timeout')),8000))]);
 }
 
 function db(): DbConnection {

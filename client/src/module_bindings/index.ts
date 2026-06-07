@@ -38,28 +38,20 @@ import AiWriteRecommendationReducer from "./ai_write_recommendation_reducer";
 export { AiWriteRecommendationReducer };
 import ApproveUnlockReducer from "./approve_unlock_reducer";
 export { ApproveUnlockReducer };
-import CloseTripReducer from "./close_trip_reducer";
-export { CloseTripReducer };
 import GenerateCloseoutReducer from "./generate_closeout_reducer";
 export { GenerateCloseoutReducer };
 import IdentityConnectedReducer from "./identity_connected_reducer";
 export { IdentityConnectedReducer };
 import IdentityDisconnectedReducer from "./identity_disconnected_reducer";
 export { IdentityDisconnectedReducer };
-import IngestVehicleSnapshotReducer from "./ingest_vehicle_snapshot_reducer";
-export { IngestVehicleSnapshotReducer };
 import PushTelemetryReducer from "./push_telemetry_reducer";
 export { PushTelemetryReducer };
 import ReserveVehicleReducer from "./reserve_vehicle_reducer";
 export { ReserveVehicleReducer };
 import SeedDemoDataReducer from "./seed_demo_data_reducer";
 export { SeedDemoDataReducer };
-import StartCheckinReducer from "./start_checkin_reducer";
-export { StartCheckinReducer };
 import StartReturnReducer from "./start_return_reducer";
 export { StartReturnReducer };
-import StartTripReducer from "./start_trip_reducer";
-export { StartTripReducer };
 
 // Import and reexport all procedure arg types
 
@@ -180,15 +172,11 @@ const tablesSchema = __schema(
 const reducersSchema = __reducers(
   __reducerSchema("ai_write_recommendation", AiWriteRecommendationReducer),
   __reducerSchema("approve_unlock", ApproveUnlockReducer),
-  __reducerSchema("close_trip", CloseTripReducer),
   __reducerSchema("generate_closeout", GenerateCloseoutReducer),
-  __reducerSchema("ingest_vehicle_snapshot", IngestVehicleSnapshotReducer),
   __reducerSchema("push_telemetry", PushTelemetryReducer),
   __reducerSchema("reserve_vehicle", ReserveVehicleReducer),
   __reducerSchema("seed_demo_data", SeedDemoDataReducer),
-  __reducerSchema("start_checkin", StartCheckinReducer),
   __reducerSchema("start_return", StartReturnReducer),
-  __reducerSchema("start_trip", StartTripReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

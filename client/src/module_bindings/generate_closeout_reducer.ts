@@ -12,4 +12,6 @@ import {
 
 export default {
   tripId: __t.u64(),
+  verdict: __t.string(),
+  body: __t.string(),
 };

@@ -3,8 +3,18 @@
 //! SpacetimeDB is the live "Trip Room" ledger. Every meaningful state change in
 //! the trip lifecycle — reservation, vehicle snapshot, AI recommendation, unlock,
 //! telemetry, return and closeout — moves through one authoritative shared state
-//! here, and is streamed to every subscribed client (the /resident and /owner
-//! windows) in real time.
+//! here, and is streamed to every subscribed client in real time.
+//!
+//! ARCHITECTURE NOTE — reducers are sandboxed and never make outbound HTTP/LLM
+//! calls. They only validate state transitions and persist data passed into
+//! them. The AI Trust Agent is a *separate actor* (see `agent/`): it subscribes
+//! to this shared state, decides when an artifact is needed, optionally calls an
+//! LLM, and then writes its structured result back through the persist-only
+//! reducers `ai_write_recommendation` and `generate_closeout`.
+//!
+//! The actors writing to this shared state are therefore: the resident, the
+//! owner, the telemetry simulator (the owner's "Simulate Trip" connector), and
+//! the AI Trust Agent — all distinct, all authoritative through reducers.
 
 use spacetimedb::{ReducerContext, Table, Timestamp};
 
@@ -15,11 +25,11 @@ use spacetimedb::{ReducerContext, Table, Timestamp};
 // AVAILABLE
 //   -> RESERVED
 //   -> CHECK_IN_STARTED
-//   -> VEHICLE_VERIFIED      (snapshot ingested, AI unlock recommendation written)
+//   -> VEHICLE_VERIFIED      (snapshot ingested; AI agent then writes unlock rec)
 //   -> UNLOCK_GRANTED
 //   -> TRIP_ACTIVE
 //   -> RETURN_STARTED
-//   -> AI_REVIEWING          (AI closeout report written)
+//   -> AI_REVIEWING          (AI agent then writes closeout, which closes trip)
 //   -> CLOSED
 
 mod state {
@@ -34,7 +44,7 @@ mod state {
 }
 
 // ---------------------------------------------------------------------------
-// Tables  (all `public` so the browser clients can subscribe to them)
+// Tables  (all `public` so the browser clients and the agent can subscribe)
 // ---------------------------------------------------------------------------
 
 #[spacetimedb::table(name = vehicles, public)]
@@ -106,7 +116,7 @@ pub struct AiRecommendation {
     pub id: u64,
     pub trip_id: u64,
     pub kind: String,    // unlock | closeout
-    pub verdict: String, // APPROVE | CLEAN_CLOSE | REVIEW
+    pub verdict: String, // APPROVE | REVIEW | CLEAN_CLOSE
     pub body: String,
     pub created_at: Timestamp,
 }
@@ -169,6 +179,20 @@ fn find_trip(ctx: &ReducerContext, trip_id: u64) -> Result<Trip, String> {
         .id()
         .find(trip_id)
         .ok_or_else(|| format!("trip {trip_id} not found"))
+}
+
+fn set_state(ctx: &ReducerContext, trip_id: u64, new_state: &str) -> Result<(), String> {
+    let mut trip = find_trip(ctx, trip_id)?;
+    trip.state = new_state.to_string();
+    ctx.db.trips().id().update(trip);
+    Ok(())
+}
+
+fn has_recommendation(ctx: &ReducerContext, trip_id: u64, kind: &str) -> bool {
+    ctx.db
+        .ai_recommendations()
+        .iter()
+        .any(|r| r.trip_id == trip_id && r.kind == kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,12 +287,12 @@ pub fn seed_demo_data(ctx: &ReducerContext) {
 }
 
 // ---------------------------------------------------------------------------
-// reserve_vehicle
+// reserve_vehicle  (resident action)
 //
-// Creates the Trip Room and runs the automatic check-in cascade so that, the
-// instant a resident reserves, the owner window lights up with: the reservation,
-// a simulated vehicle telemetry snapshot, and the AI unlock recommendation.
-// Trip lands in VEHICLE_VERIFIED, awaiting the owner's approval.
+// Opens the Trip Room and runs the deterministic check-in cascade
+// (RESERVED -> CHECK_IN_STARTED -> VEHICLE_VERIFIED) including the vehicle
+// telemetry snapshot. It deliberately STOPS at VEHICLE_VERIFIED and does NOT
+// write any AI content — that is the AI Trust Agent's job, as a separate actor.
 // ---------------------------------------------------------------------------
 
 #[spacetimedb::reducer]
@@ -312,140 +336,82 @@ pub fn reserve_vehicle(
     set_state(ctx, trip.id, state::CHECK_IN_STARTED)?;
     log_event(ctx, trip.id, "CHECK_IN_STARTED", "Resident started check-in");
 
-    // 3. Vehicle snapshot -> VEHICLE_VERIFIED
-    ingest_snapshot_internal(ctx, trip.id, &vehicle)?;
-
-    // 4. AI unlock recommendation
-    write_unlock_recommendation(ctx, &trip, &vehicle, &renter);
-
-    Ok(())
-}
-
-fn set_state(ctx: &ReducerContext, trip_id: u64, new_state: &str) -> Result<(), String> {
-    let mut trip = find_trip(ctx, trip_id)?;
-    trip.state = new_state.to_string();
-    ctx.db.trips().id().update(trip);
-    Ok(())
-}
-
-fn ingest_snapshot_internal(
-    ctx: &ReducerContext,
-    trip_id: u64,
-    vehicle: &Vehicle,
-) -> Result<(), String> {
+    // 3. Vehicle snapshot -> VEHICLE_VERIFIED (telemetry, not AI)
     ctx.db.telemetry().insert(Telemetry {
         id: 0,
-        trip_id,
+        trip_id: trip.id,
         battery: vehicle.battery,
         odometer_delta: 0.0,
         harsh_brake: false,
         geofence_ok: true,
         timestamp: ctx.timestamp,
     });
-    set_state(ctx, trip_id, state::VEHICLE_VERIFIED)?;
+    set_state(ctx, trip.id, state::VEHICLE_VERIFIED)?;
     log_event(
         ctx,
-        trip_id,
+        trip.id,
         "VEHICLE_VERIFIED",
         &format!(
             "Snapshot captured at {}% battery in {}",
             vehicle.battery, vehicle.location
         ),
     );
+
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// AI Trust Agent — writes structured recommendations into shared state.
-// It is not a chatbot: it reads trip + telemetry and writes rows that humans
-// and the UI act on.
+// ai_write_recommendation  (AI Trust Agent action — PERSIST ONLY)
+//
+// The agent decides the verdict and body (optionally via an LLM) outside the
+// database. This reducer only persists the structured row it is handed and
+// appends a timeline event. It is idempotent per (trip, kind) so the standalone
+// agent and the owner-side fallback can never produce a duplicate.
 // ---------------------------------------------------------------------------
 
-fn write_unlock_recommendation(
+#[spacetimedb::reducer]
+pub fn ai_write_recommendation(
     ctx: &ReducerContext,
-    trip: &Trip,
-    vehicle: &Vehicle,
-    renter: &str,
-) {
-    let resident = ctx.db.residents().iter().find(|r| r.name == renter);
-    let (verified, score) = match resident {
-        Some(r) => (r.status == "verified", r.voltscore),
-        None => (false, 0),
-    };
+    trip_id: u64,
+    kind: String,
+    verdict: String,
+    body: String,
+) -> Result<(), String> {
+    // Validate the trip exists; the agent should only write for real trips.
+    let _ = find_trip(ctx, trip_id)?;
 
-    let body = if verified {
-        format!(
-            "Approve unlock. {renter} is a verified resident with VoltScore {score}. \
-             Vehicle snapshot captured at {}% battery in {}. No active disputes. Unlock recommended.",
-            vehicle.battery, vehicle.location
-        )
-    } else {
-        format!(
-            "Hold unlock. {renter} is not a fully verified resident. \
-             Manual review recommended before granting access to {}.",
-            vehicle.model
-        )
-    };
-    let verdict = if verified { "APPROVE" } else { "REVIEW" };
+    if has_recommendation(ctx, trip_id, &kind) {
+        // Already written by another actor — no-op (idempotent).
+        return Ok(());
+    }
 
     ctx.db.ai_recommendations().insert(AiRecommendation {
         id: 0,
-        trip_id: trip.id,
-        kind: "unlock".to_string(),
-        verdict: verdict.to_string(),
+        trip_id,
+        kind: kind.clone(),
+        verdict,
         body,
         created_at: ctx.timestamp,
     });
+
+    let event_kind = if kind == "unlock" {
+        "AI_UNLOCK_RECOMMENDATION"
+    } else {
+        "AI_RECOMMENDATION"
+    };
     log_event(
         ctx,
-        trip.id,
-        "AI_UNLOCK_RECOMMENDATION",
-        "AI Trust Agent wrote unlock recommendation",
+        trip_id,
+        event_kind,
+        "AI Trust Agent wrote a recommendation into SpacetimeDB",
     );
-}
-
-// ---------------------------------------------------------------------------
-// Explicit step reducers (also usable individually / for testing)
-// ---------------------------------------------------------------------------
-
-#[spacetimedb::reducer]
-pub fn start_checkin(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::RESERVED)?;
-    set_state(ctx, trip_id, state::CHECK_IN_STARTED)?;
-    log_event(ctx, trip_id, "CHECK_IN_STARTED", "Resident started check-in");
     Ok(())
 }
 
-#[spacetimedb::reducer]
-pub fn ingest_vehicle_snapshot(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::CHECK_IN_STARTED)?;
-    let vehicle = ctx
-        .db
-        .vehicles()
-        .id()
-        .find(trip.vehicle_id)
-        .ok_or("vehicle not found")?;
-    ingest_snapshot_internal(ctx, trip_id, &vehicle)
-}
+// ---------------------------------------------------------------------------
+// approve_unlock  (owner action)
+// ---------------------------------------------------------------------------
 
-#[spacetimedb::reducer]
-pub fn ai_write_recommendation(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::VEHICLE_VERIFIED)?;
-    let vehicle = ctx
-        .db
-        .vehicles()
-        .id()
-        .find(trip.vehicle_id)
-        .ok_or("vehicle not found")?;
-    let renter = trip.renter.clone();
-    write_unlock_recommendation(ctx, &trip, &vehicle, &renter);
-    Ok(())
-}
-
-/// Owner approves the unlock. Grants access and immediately activates the trip.
 #[spacetimedb::reducer]
 pub fn approve_unlock(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
     let trip = find_trip(ctx, trip_id)?;
@@ -464,24 +430,10 @@ pub fn approve_unlock(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> 
     Ok(())
 }
 
-/// Standalone trip activation (kept for completeness / manual stepping).
-#[spacetimedb::reducer]
-pub fn start_trip(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::UNLOCK_GRANTED)?;
-    set_state(ctx, trip_id, state::TRIP_ACTIVE)?;
-    if let Some(mut v) = ctx.db.vehicles().id().find(trip.vehicle_id) {
-        v.status = "Active Trip".to_string();
-        ctx.db.vehicles().id().update(v);
-    }
-    log_event(ctx, trip_id, "TRIP_ACTIVE", "Trip is now active");
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
-// push_telemetry — simulator-backed vehicle connector.
-// The owner's "Simulate Trip" button streams these rows in through SpacetimeDB.
-// Each row also updates the live vehicle battery and writes a trip event.
+// push_telemetry  (telemetry simulator action — the owner's vehicle connector)
+//
+// Each row updates the live vehicle battery and writes a trip event.
 // ---------------------------------------------------------------------------
 
 #[spacetimedb::reducer]
@@ -523,11 +475,12 @@ pub fn push_telemetry(
 }
 
 // ---------------------------------------------------------------------------
-// Return + AI closeout cascade
+// start_return  (resident action)
+//
+// Moves the trip into AI_REVIEWING and STOPS. This is the signal for the AI
+// Trust Agent to read the telemetry and write the closeout.
 // ---------------------------------------------------------------------------
 
-/// Resident starts the return. This runs the closeout cascade:
-/// RETURN_STARTED -> AI_REVIEWING (AI writes closeout from telemetry) -> CLOSED.
 #[spacetimedb::reducer]
 pub fn start_return(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
     let trip = find_trip(ctx, trip_id)?;
@@ -536,58 +489,33 @@ pub fn start_return(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
     set_state(ctx, trip_id, state::RETURN_STARTED)?;
     log_event(ctx, trip_id, "RETURN_STARTED", "Resident started return");
 
-    generate_closeout_internal(ctx, trip_id)?;
-    close_trip_internal(ctx, trip_id)?;
+    set_state(ctx, trip_id, state::AI_REVIEWING)?;
+    log_event(ctx, trip_id, "AI_REVIEWING", "Awaiting AI Trust Agent closeout");
     Ok(())
 }
 
-fn generate_closeout_internal(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    set_state(ctx, trip_id, state::AI_REVIEWING)?;
-    log_event(ctx, trip_id, "AI_REVIEWING", "AI Trust Agent reviewing trip");
+// ---------------------------------------------------------------------------
+// generate_closeout  (AI Trust Agent action — PERSIST ONLY + close trip)
+//
+// The agent computes the closeout (from telemetry, optionally via an LLM) and
+// hands the result here. This reducer only persists the structured row, then
+// performs the deterministic AI_REVIEWING -> CLOSED transition and frees the
+// vehicle. Idempotent: if a closeout already exists it is a no-op.
+// ---------------------------------------------------------------------------
 
-    // Build the closeout report from the actual telemetry rows for this trip.
-    let mut rows: Vec<Telemetry> = ctx
-        .db
-        .telemetry()
-        .iter()
-        .filter(|t| t.trip_id == trip_id)
-        .collect();
-    rows.sort_by_key(|r| r.id);
+#[spacetimedb::reducer]
+pub fn generate_closeout(
+    ctx: &ReducerContext,
+    trip_id: u64,
+    verdict: String,
+    body: String,
+) -> Result<(), String> {
+    let trip = find_trip(ctx, trip_id)?;
 
-    let body;
-    let verdict;
-    if rows.is_empty() {
-        // Hardcoded fallback so the demo never depends on data being present.
-        body = "Trip closed cleanly. Battery moved from 82% to 61%, odometer increased \
-                14.2 miles, one harsh braking event detected, geofence OK. Recommend clean \
-                closeout with minor battery adjustment."
-            .to_string();
-        verdict = "CLEAN_CLOSE".to_string();
-    } else {
-        let start_battery = rows.first().map(|r| r.battery).unwrap_or(0);
-        let end_battery = rows.last().map(|r| r.battery).unwrap_or(0);
-        let miles: f32 = rows.iter().map(|r| r.odometer_delta).sum();
-        let harsh = rows.iter().filter(|r| r.harsh_brake).count();
-        let geofence_ok = rows.iter().all(|r| r.geofence_ok);
-
-        let harsh_str = match harsh {
-            0 => "no harsh braking events".to_string(),
-            1 => "one harsh braking event detected".to_string(),
-            n => format!("{n} harsh braking events detected"),
-        };
-        let geofence_str = if geofence_ok { "geofence OK" } else { "geofence FLAGGED" };
-        verdict = if geofence_ok && harsh <= 1 {
-            "CLEAN_CLOSE".to_string()
-        } else {
-            "REVIEW".to_string()
-        };
-
-        body = format!(
-            "Trip closed cleanly. Battery moved from {start_battery}% to {end_battery}%, \
-             odometer increased {miles:.1} miles, {harsh_str}, {geofence_str}. \
-             Recommend clean closeout with minor battery adjustment."
-        );
+    if has_recommendation(ctx, trip_id, "closeout") {
+        return Ok(()); // already closed out by another actor
     }
+    require_state(&trip, state::AI_REVIEWING)?;
 
     ctx.db.ai_recommendations().insert(AiRecommendation {
         id: 0,
@@ -601,13 +529,10 @@ fn generate_closeout_internal(ctx: &ReducerContext, trip_id: u64) -> Result<(), 
         ctx,
         trip_id,
         "AI_CLOSEOUT",
-        "AI Trust Agent wrote closeout report",
+        "AI Trust Agent wrote closeout report into SpacetimeDB",
     );
-    Ok(())
-}
 
-fn close_trip_internal(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
+    // The closeout being written is what closes the trip.
     set_state(ctx, trip_id, state::CLOSED)?;
     if let Some(mut v) = ctx.db.vehicles().id().find(trip.vehicle_id) {
         v.status = "Available".to_string();
@@ -615,20 +540,4 @@ fn close_trip_internal(ctx: &ReducerContext, trip_id: u64) -> Result<(), String>
     }
     log_event(ctx, trip_id, "CLOSED", "Trip closed");
     Ok(())
-}
-
-/// Standalone closeout generation (kept for manual stepping).
-#[spacetimedb::reducer]
-pub fn generate_closeout(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::RETURN_STARTED)?;
-    generate_closeout_internal(ctx, trip_id)
-}
-
-/// Standalone trip close (kept for manual stepping).
-#[spacetimedb::reducer]
-pub fn close_trip(ctx: &ReducerContext, trip_id: u64) -> Result<(), String> {
-    let trip = find_trip(ctx, trip_id)?;
-    require_state(&trip, state::AI_REVIEWING)?;
-    close_trip_internal(ctx, trip_id)
 }

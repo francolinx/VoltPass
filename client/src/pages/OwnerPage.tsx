@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useVoltPass, activeTrip } from "../hooks";
 import { approveUnlock, pushTelemetry, seedDemoData } from "../store";
+import { useOwnerAgentFallback } from "../ai/useOwnerAgentFallback";
 import {
   ConnectionPill,
   StatePill,
@@ -27,6 +28,9 @@ const TELEMETRY_SCRIPT: [number, number, boolean, boolean][] = [
 
 export default function OwnerPage() {
   const snap = useVoltPass();
+  // Owner window also hosts the AI Trust Agent fallback (writes recommendations
+  // through reducers if the standalone agent process isn't running).
+  useOwnerAgentFallback(snap);
   const trip = activeTrip(snap);
   const [simulating, setSimulating] = useState(false);
   const timer = useRef<number | null>(null);

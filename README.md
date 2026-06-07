@@ -83,22 +83,29 @@ a state machine, and a real-time fan-out from scratch.
 | `ai_recommendations` | id, trip_id, kind, verdict, body, created_at — *AI Trust Agent output* |
 | `community` | id, name, teslas, residents, chargers — *Community Ops stats* |
 
-**Reducers** (server-side functions; enforce the state machine):
+**Reducers** (server-side functions; they only validate state transitions and
+persist data — they never make outbound HTTP/LLM calls):
 
 - `seed_demo_data` — resets + seeds the community, fleet and residents
-- `reserve_vehicle` — opens the Trip Room and runs the check-in cascade
-  (RESERVED → CHECK_IN_STARTED → VEHICLE_VERIFIED) including the vehicle snapshot
-  and the AI unlock recommendation
-- `start_checkin`, `ingest_vehicle_snapshot`, `ai_write_recommendation` —
-  the individual check-in steps (also callable standalone)
-- `approve_unlock` — owner grants access; activates the trip (→ TRIP_ACTIVE)
-- `start_trip` — standalone activation
-- `push_telemetry` — simulator-backed vehicle connector writes a telemetry row,
-  updates the live battery and appends a timeline event
-- `start_return` — runs the closeout cascade
-  (RETURN_STARTED → AI_REVIEWING → CLOSED), generating the AI closeout from
-  telemetry
-- `generate_closeout`, `close_trip` — the individual closeout steps
+- `reserve_vehicle` *(resident)* — opens the Trip Room and runs the deterministic
+  check-in cascade (RESERVED → CHECK_IN_STARTED → VEHICLE_VERIFIED) including the
+  vehicle telemetry snapshot. Stops at VEHICLE_VERIFIED — it writes **no** AI
+  content.
+- `ai_write_recommendation(trip_id, kind, verdict, body)` *(AI Trust Agent)* —
+  **persist-only.** Stores the structured row the agent computed and appends a
+  timeline event. Idempotent per (trip, kind).
+- `approve_unlock` *(owner)* — grants access and activates the trip (→ TRIP_ACTIVE)
+- `push_telemetry` *(telemetry simulator)* — writes a telemetry row, updates the
+  live battery and appends a timeline event
+- `start_return` *(resident)* — moves the trip to AI_REVIEWING and stops, signalling
+  the AI Trust Agent
+- `generate_closeout(trip_id, verdict, body)` *(AI Trust Agent)* — **persist-only.**
+  Stores the closeout the agent computed, then performs the deterministic
+  AI_REVIEWING → CLOSED transition and frees the vehicle. Idempotent.
+
+Each reducer is annotated with the **actor** that calls it. The resident, the
+owner, the telemetry simulator, and the AI Trust Agent are four distinct actors,
+all writing to the one authoritative shared state.
 
 **Subscriptions** (both clients subscribe to all of these):
 
@@ -114,21 +121,36 @@ SELECT * FROM community
 
 ## How the AI Trust Agent works
 
-**The agent is not a chatbot. It is a participant in shared state.** It reads the
-trip and its telemetry, then writes structured rows into `ai_recommendations`
-that humans and the UI act on:
+**The agent is not a chatbot, and it does not run inside the database.**
+SpacetimeDB reducers are sandboxed and must not make outbound HTTP/LLM calls, so
+the AI Trust Agent is a **separate actor** (the standalone process in
+[`agent/`](agent/src/index.ts)). It:
 
-1. **Unlock recommendation** — written during check-in. It checks the renter's
-   verification status and VoltScore and the vehicle snapshot, then emits a
-   verdict (`APPROVE` / `REVIEW`) and a human-readable body.
-2. **Closeout report** — written when the resident starts the return. It is
-   **computed from the actual telemetry rows** for the trip (battery delta,
-   odometer total, harsh-braking count, geofence status) and emits a verdict
-   (`CLEAN_CLOSE` / `REVIEW`).
+1. **Subscribes** to the shared state (`trips`, `telemetry`, `trip_events`,
+   `vehicles`, `residents`, `ai_recommendations`).
+2. **Decides** when an artifact is needed:
+   - a trip reaches `VEHICLE_VERIFIED` → write an **unlock recommendation**
+     (verdict `APPROVE` / `REVIEW`) from the renter's verification + VoltScore and
+     the vehicle snapshot;
+   - a trip reaches `AI_REVIEWING` → write a **closeout report**
+     (verdict `CLEAN_CLOSE` / `REVIEW`) computed from the actual telemetry rows
+     (battery delta, odometer total, harsh-braking count, geofence status).
+3. **Optionally calls an LLM** for the closeout prose — only when
+   `ANTHROPIC_API_KEY` is set, and only as an enhancement; the structured verdict
+   always comes from telemetry.
+4. **Always has a hardcoded fallback**, so the demo never depends on an external
+   API.
+5. **Writes back through reducers** — `ai_write_recommendation` and
+   `generate_closeout` — which only persist what they are handed.
 
-The closeout always has a **hardcoded fallback**, so the demo never depends on an
-external API. (A real LLM call can be slotted into `generate_closeout` to author
-the prose from the same telemetry — the structured row contract stays identical.)
+The shared decision logic lives in
+[`client/src/ai/agent-logic.ts`](client/src/ai/agent-logic.ts).
+
+> **Demo resilience:** the owner window also runs the same logic as a *fallback*
+> (`client/src/ai/useOwnerAgentFallback.ts`). If the standalone agent process
+> isn't running, the owner page writes the artifacts after a short grace period.
+> The reducers are idempotent per (trip, kind), so the standalone agent and the
+> fallback can never produce a duplicate.
 
 ## What is simulated
 
@@ -158,12 +180,21 @@ rustup target add wasm32-unknown-unknown
 cd client
 npm install
 npm run dev
+
+# 4. in a fourth terminal: run the AI Trust Agent (a separate actor)
+cd agent
+npm install
+npm start          # optional: ANTHROPIC_API_KEY=sk-... npm start  (LLM closeout)
 ```
 
 Then open the two windows side by side:
 
 - http://localhost:5173/resident
 - http://localhost:5173/owner
+
+> The AI Trust Agent in step 4 is the honest architecture. If you skip it, the
+> owner window's built-in fallback still writes the AI artifacts, so the demo
+> loop always completes.
 
 > The client connects to `ws://<host>:3000` by default. Override with
 > `?stdb=ws://host:port` on either page if your DB is elsewhere.
@@ -173,17 +204,19 @@ Then open the two windows side by side:
 1. **Open `/resident` and `/owner` side by side.** Point out the green
    *SpacetimeDB connected* pill and the live `trips` debug strip on both.
 2. **(`/resident`) Click _Reserve_** on the Tesla Model 3.
-   → On **`/owner`**, the reservation card, the **telemetry snapshot**, and the
-   **AI unlock recommendation** all flash in *instantly* — no refresh. The state
-   pill reads *Vehicle verified* in both windows.
+   → On **`/owner`**, the reservation card and the **telemetry snapshot** flash in
+   *instantly* (no refresh); the state pill reads *Vehicle verified* in both
+   windows. A beat later the **AI Trust Agent** — a separate actor — posts its
+   **unlock recommendation** into SpacetimeDB and it flashes into both windows.
 3. **(`/owner`) Click _Approve Unlock_.** → Both windows flip to *Trip active*;
    the Model 3 flips to *Active Trip* in the fleet.
 4. **(`/owner`) Click _Simulate Trip_.** → Telemetry streams live: battery ticks
    `82 → 61`, odometer climbs to `+14.2 mi`, a harsh-brake event flags. Every row
    appears in both windows as it lands.
-5. **(`/resident`) Click _Start Return_.** → The AI Trust Agent writes the
-   **closeout report** (computed from the telemetry) into SpacetimeDB; both
-   windows show it and the trip closes. The Model 3 returns to *Available*.
+5. **(`/resident`) Click _Start Return_.** → The trip moves to *AI reviewing*.
+   The **AI Trust Agent** reads the telemetry, writes the **closeout report**
+   into SpacetimeDB, and that write closes the trip. Both windows show the report
+   and flip to *Closed*; the Model 3 returns to *Available*.
 6. *Reset with the ↺ button to run it again.*
 
 The whole point: **a judge sees shared live state across two windows within 10

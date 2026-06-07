@@ -1,0 +1,18 @@
+{
+  "name": "voltpass-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "VoltPass AI Trust Agent — a separate actor that subscribes to SpacetimeDB and writes structured recommendations back through reducers.",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "spacetimedb": "1.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
+}

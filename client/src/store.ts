@@ -237,3 +237,17 @@ export function pushTelemetry(
 export function seedDemoData() {
   conn?.reducers.seedDemoData({});
 }
+
+// AI Trust Agent reducers (persist-only). Called by the standalone agent and,
+// as a fallback, by the owner-side agent in the browser.
+export function aiWriteRecommendation(
+  tripId: bigint,
+  kind: string,
+  verdict: string,
+  body: string,
+) {
+  conn?.reducers.aiWriteRecommendation({ tripId, kind, verdict, body });
+}
+export function generateCloseout(tripId: bigint, verdict: string, body: string) {
+  conn?.reducers.generateCloseout({ tripId, verdict, body });
+}

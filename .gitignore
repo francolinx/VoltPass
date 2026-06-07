@@ -10,3 +10,7 @@ client/.vite/
 
 # SpacetimeDB local
 /.spacetime
+
+# TS build artifacts
+*.tsbuildinfo
+client/.tsbuild-node/

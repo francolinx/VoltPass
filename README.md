@@ -234,6 +234,22 @@ The shared decision logic lives in
 [Node 18+](https://nodejs.org), the [SpacetimeDB CLI](https://spacetimedb.com/install),
 and `openssl`.
 
+### Quickstart — the two-window SpacetimeDB demo (3 terminals)
+
+This is the core judged loop. The AI Trust Agent and Smartcar connector are
+optional extra actors (next section); without them the owner window's built-in
+fallbacks keep the loop complete.
+
+```bash
+rustup target add wasm32-unknown-unknown   # one-time
+./scripts/start-db.sh                       # terminal 1 — SpacetimeDB
+./scripts/publish.sh                        # terminal 2 — build + publish module
+cd client && npm install && npm run dev     # terminal 3 — web client
+# open http://localhost:5173/resident and http://localhost:5173/owner
+```
+
+### Full setup — with the AI agent and Smartcar connector as separate actors
+
 ```bash
 # 0. one-time: wasm target for building the module
 rustup target add wasm32-unknown-unknown

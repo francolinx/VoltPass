@@ -73,6 +73,16 @@ app.get("/api/smartcar/status", (_req, res) => {
   });
 });
 
+// Alias: /health -> same as /status (for spec compatibility)
+app.get("/api/smartcar/health", (_req, res) => {
+  res.json({
+    configured: isConfigured(),
+    mode: mode(),
+    geofence: geofence(),
+    connectedCount: getConnectedVehicles().length,
+  });
+});
+
 // 1. Auth URL
 app.get("/api/smartcar/auth-url", (_req, res) => {
   const { url, mode: m } = getAuthUrl();

@@ -1,0 +1,12 @@
+# Rust
+server/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+client/dist/
+client/.vite/
+*.log
+
+# SpacetimeDB local
+/.spacetime

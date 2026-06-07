@@ -198,10 +198,11 @@ app.get("/api/voltpass/vehicles", (_req, res) => {
     })),
   });
 });
-
+// Guard: keep server alive if SpacetimeDB binary deserialization fails
+process.on('uncaughtException',(e)=>console.error('[stdb-guard] non-fatal:',e.message));
 async function main() {
   log(`Smartcar connector starting (mode=${mode()}, configured=${isConfigured()})`);
-  await connectSpacetime();
+  try{await connectSpacetime();}catch(e){log('[stdb] non-fatal: '+(e as Error).message);}
   app.listen(PORT, () => log(`listening on http://127.0.0.1:${PORT}`));
 }
 
